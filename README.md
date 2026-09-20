@@ -1,18 +1,8 @@
 # MEASUREMENT-CONSISTENT MEDICAL IMAGE SUPER-RESOLUTION VIA SPARSE LARGE-FIELD EXPERTS
 
-Single-blind review repository for **SPARX**, a compact ×2 medical CT
+**SPARX** is a compact ×2 medical CT
 super-resolution method with sparse large-field experts and exact measurement
 projection.
-
-## Review-stage scope
-
-This is a deliberately limited code-display repository. During review it
-contains only `.py` source files and this `README.md`. It does **not** contain
-datasets, patient/series lists, split manifests, images, checkpoints, absolute
-paths, credentials, internal experiment logs, deleted development history, or
-the complete exploratory codebase. The repository is private at the current
-stage; a fuller artefact can be released after peer review subject to data and
-third-party licenses.
 
 ## Method
 
@@ -59,7 +49,6 @@ from this review-stage display repository by design.
 
 - Use the 131 labelled training volumes only.
 - Split strictly by patient/volume: 91 train, 20 validation, 20 held-out test.
-- Use seed 2026.
 - Stratify no-tumour volumes separately and stratify positive volumes by
   tumour-burden quartile.
 - Never split at slice level.
