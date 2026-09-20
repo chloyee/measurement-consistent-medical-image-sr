@@ -17,13 +17,13 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "code"))
 sys.path.insert(0, str(ROOT))
 
-from ctsr.data import bicubic_downsample
-from ctsr.external_data import HKUExternalSlices
-from ctsr.metrics import batch_metrics
-from ctsr.models import build_model
+from data_utils import bicubic_downsample
+from data_utils import HKUExternalSlices
+from metrics import batch_metrics
+from util import build_model
 TERMINAL = {"completed", "early_stopped"}
 
 
