@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "code"))
 
 import numpy as np
 import torch
@@ -21,9 +21,9 @@ import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader
 
-from ctsr.data import LitsSlices, bicubic_downsample, mix_liver_window_views
-from ctsr.metrics import batch_metrics
-from ctsr.models import build_model
+from data_utils import LitsSlices, bicubic_downsample, mix_liver_window_views
+from metrics import batch_metrics
+from util import build_model
 
 
 class EarlyStopper:
@@ -121,23 +121,57 @@ def preliminary_loss_weight(train_config: dict, step: int) -> float:
 
 @torch.inference_mode()
 def validate(model, loader, device, scale):
-    model.eval(); totals = defaultdict(list)
+    model.eval()
+    totals = defaultdict(lambda: defaultdict(list))
     for batch in loader:
         hr = batch["hr"].to(device, non_blocking=True)
         lr = bicubic_downsample(hr, scale)
         output = model(lr)["sr"]
-        values = batch_metrics(output, hr, lr, scale)
-        for name, tensor in values.items(): totals[name].extend(tensor.cpu().tolist())
-    return {name: float(np.mean(values)) for name, values in totals.items()}
+        for name, tensor in batch_metrics(output, hr, lr, scale).items():
+            for patient, value in zip(batch["patient_id"], tensor.cpu().tolist()):
+                totals[patient][name].append(value)
+    if not totals:
+        raise ValueError("Evaluation partition has no slices")
+    names = next(iter(totals.values()))
+    return {name: float(np.mean([np.mean(v[name]) for v in totals.values()])) for name in names}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--evaluate-only", action="store_true")
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--partition", choices=("val", "test"), default="test")
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
+    if args.evaluate_only:
+        if not args.checkpoint:
+            parser.error("--checkpoint is required with --evaluate-only")
+        import hashlib
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = build_model(cfg["model"]).to(device)
+        checkpoint_path = Path(args.checkpoint)
+        state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(state["model"], strict=True)
+        dataset = LitsSlices(cfg["data"]["manifest"], args.partition,
+                             cfg["data"]["val_patch_size"], False, cfg["seed"],
+                             cfg["data"]["val_slices_per_patient"])
+        loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
+        digest = hashlib.sha256()
+        with checkpoint_path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        result = {"partition": args.partition, "checkpoint_step": state.get("step"),
+                  "checkpoint_sha256": digest.hexdigest(), "slices": len(dataset),
+                  "patients": len({row["patient_id"] for row in dataset.rows}),
+                  "aggregation": "slice_mean_then_patient_mean",
+                  **validate(model, loader, device, int(cfg["model"].get("scale", 2)))}
+        atomic_json(ROOT / "reports" / cfg["experiment_id"] / (args.partition + ".json"), result)
+        print(json.dumps(result), flush=True)
+        return 0
     if args.smoke:
+        cfg["train"]["stop_at_step"] = 20
         cfg["train"]["max_steps"] = 20; cfg["train"]["validate_every"] = 10
         cfg["train"]["batch_size"] = min(
             int(cfg["train"].get("batch_size", 2)), 2
@@ -154,13 +188,16 @@ def main() -> int:
             cfg["train"]["scheduler"]["milestones"] = [10, 15]
         cfg["experiment_id"] += "_smoke"
     max_steps = int(cfg["train"]["max_steps"])
+    stop_at_step = int(cfg["train"].get("stop_at_step", max_steps))
+    if not 0 < stop_at_step <= max_steps:
+        raise ValueError("stop_at_step must be in (0, max_steps]")
     early_config = cfg["train"].setdefault("early_stopping", {})
     early_config.setdefault("enabled", True)
     early_config.setdefault("monitor", "psnr")
     early_config.setdefault("mode", "max")
     early_config.setdefault("patience_validations", 8)
     early_config.setdefault("min_delta", 0.002)
-    early_config.setdefault("min_steps", min(50000, max_steps // 3))
+    early_config.setdefault("min_steps", 160000)
     seed = int(cfg["seed"])
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
     if not torch.cuda.is_available() and not args.smoke:
@@ -329,7 +366,7 @@ def main() -> int:
     stopped_early = False
     last_step = start
     try:
-        for step in range(start + 1, max_steps + 1):
+        for step in range(start + 1, stop_at_step + 1):
             last_step = step
             train_step_start = time.perf_counter()
             try: batch = next(iterator)
@@ -411,7 +448,7 @@ def main() -> int:
                 }), flush=True)
                 running = 0.0
                 running_components.clear()
-            if step % cfg["train"]["validate_every"] == 0 or step == max_steps:
+            if step % cfg["train"]["validate_every"] == 0 or step == stop_at_step:
                 metrics = validate(model, val_loader, device, cfg["model"]["scale"])
                 if not all(math.isfinite(x) for x in metrics.values()): raise RuntimeError(f"Non-finite metrics: {metrics}")
                 record = {"step": step, **metrics}
