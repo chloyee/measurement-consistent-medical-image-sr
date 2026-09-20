@@ -1,0 +1,34 @@
+# Local data, patient manifests and generated reports
+/data/
+/dataset/
+/data_manifests/
+/reports/
+/checkpoints/
+/weights/
+/experiments/*/
+*patient_metrics*.json
+*series_metrics*.json
+*manifest*.csv
+split_v*.json
+
+# Clinical images and model weights
+*.dcm
+*.dicom
+*.nii
+*.nii.gz
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Credentials and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
