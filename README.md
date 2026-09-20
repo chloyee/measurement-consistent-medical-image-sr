@@ -92,7 +92,7 @@ PSNR, early-stopping state and timing.
 
 ## Comparison protocol
 
-All learned baselines use author-released natural-image ×2 checkpoints in a
+All learned baselines use author-released ×2 checkpoints in a
 frozen zero-shot setting. RGB baselines receive a three-channel repeat of CT and
 their output is reduced by channel mean. No baseline in the formal table is
 retrained on LiTS. The same degradation, crop, slice selection, metric code and
