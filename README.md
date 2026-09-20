@@ -60,9 +60,8 @@ committed.
 
 ### HKU external validation
 
-HKU-NC and HKU-CE are evaluation-only domains. They are not used for training,
-early stopping, hyperparameter selection, or model selection. Original PNGs use
-the recovered liver window `WL=40 HU, WW=120 HU`. Evaluation uses eight
+The HKU cohort comprises 389 subjects with non-contrast (HKU-NC) and
+contrast-enhanced (HKU-CE) CT. Original PNGs use the liver window `WL=40 HU, WW=120 HU`. Evaluation uses eight
 deterministic slices per scan and aggregates slice → series → patient so that
 patients with more scans cannot dominate.
 
@@ -107,9 +106,12 @@ and weights are not redistributed here.
 
 Parameter anchors are C64D8, C64D14, C64D18, C96D14 and C128D14. Module
 ablations are no KD, no large-field exchange, ungated exchange, and no exact
-projection. All ablation rows use the same 120k matched adaptation budget,
-initialization family, split, seed, loss, validation interval and early-stopping
-rule. The selected anchor is subsequently continued with the 300k main schedule.
+projection. Ablations share a 300k-step schedule configuration and stop at
+120k optimizer updates, when the preliminary-loss weight reaches zero. They use
+matched initialization, patient split, seed, loss and validation interval.
+Full training of the selected C96D14 model allows up to 300k steps, with the
+160k/8-validation early-stopping rule above. The 120k Full row and the main
+comparison therefore correspond to different training budgets.
 
 The capacity rule considers LiTS accuracy, both external domains, and parameter
 cost. Module selection first applies a data-consistency safety gate of
@@ -119,30 +121,34 @@ that gate.
 
 ## Results
 
+Reported PSNR, SSIM, MAE and parameter counts below follow the manuscript
+precision. Data-consistency values retain the additional precision of this
+review repository.
+
 ### SPARX cross-dataset performance
 
 | Dataset | PSNR (dB) ↑ | SSIM ↑ | MAE ↓ | Data consistency ↓ |
 |---|---:|---:|---:|---:|
-| LiTS17 | **47.1404** | **0.986565** | **10.7969 HU** | **3.358e-05 HU** |
-| HKU-NC | **23.9259** | **0.900507** | **10.0364 (8-bit)** | **2.795e-06 (8-bit)** |
-| HKU-CE | **26.5112** | **0.944092** | **7.2195 (8-bit)** | **4.210e-06 (8-bit)** |
+| LiTS17 | 47.140 | 0.9866 | 10.80 HU | **3.358e-05 HU** |
+| HKU-NC | 23.926 | 0.9005 | 10.036 (8-bit) | **2.795e-06 (8-bit)** |
+| HKU-CE | 26.511 | 0.9441 | 7.220 (8-bit) | **4.210e-06 (8-bit)** |
 
 ### LiTS17 comparison
 
 | Method | Protocol | Params | PSNR ↑ | SSIM ↑ |
 |---|---|---:|---:|---:|
 | Bicubic | deterministic | 0 | 42.890 | 0.9781 |
-| EDSR | official zero-shot | 40.73 M | 46.673 | 0.9858 |
-| RCAN | official zero-shot | 15.45 M | 46.694 | 0.9858 |
+| EDSR | official zero-shot | 40.730 M | 46.673 | 0.9858 |
+| RCAN | official zero-shot | 15.445 M | 46.694 | 0.9858 |
 | OmniSR | official zero-shot | 0.785 M | 46.016 | 0.9836 |
-| SwinIR | official zero-shot | 11.75 M | 46.714 | 0.9858 |
-| HAT-S | official zero-shot | 9.47 M | 46.761 | 0.9859 |
-| DAT-S | official zero-shot | 11.06 M | 46.741 | 0.9858 |
-| MambaIRv2 | official zero-shot | 22.90 M | 46.767 | 0.9858 |
-| PFT-SR_class | official zero-shot | 19.62 M | 46.775 | 0.9859 |
+| SwinIR | official zero-shot | 11.752 M | 46.714 | 0.9858 |
+| HAT-S | official zero-shot | 9.473 M | 46.761 | 0.9859 |
+| DAT-S | official zero-shot | 11.064 M | 46.741 | 0.9858 |
+| MambaIRv2 | official zero-shot | 22.903 M | 46.767 | 0.9858 |
+| PFT-SR_class | official zero-shot | 19.624 M | 46.775 | 0.9859 |
 | PFT-SR_light | official zero-shot | 0.776 M | 46.732 | 0.9858 |
-| OSEDiff | official cross-degradation | SD2.1+LoRA | 29.400 | 0.8416 |
-| **SPARX (Ours)** | LiTS-trained | **2.759 M** | **47.140** | **0.9866** |
+| OSEDiff | official cross-degradation | 1,775 M | 29.400 | 0.8416 |
+| SPARX (Ours) | LiTS-trained | 2.759 M | **47.140** | **0.9866** |
 
 ### HKU external comparison
 
@@ -159,7 +165,7 @@ that gate.
 | PFT-SR_class | 22.726 | 0.8936 | 23.253 | 0.9307 |
 | PFT-SR_light | 23.343 | 0.8913 | 25.268 | 0.9339 |
 | OSEDiff | 17.574 | 0.4650 | 17.345 | 0.5472 |
-| **SPARX (Ours)** | **23.926** | **0.9005** | **26.511** | **0.9441** |
+| SPARX (Ours) | **23.926** | **0.9005** | **26.511** | **0.9441** |
 
 ### Parameter ablation: matched 120k protocol
 
@@ -168,7 +174,7 @@ that gate.
 | C64D8 | 0.787 M | 47.0435 | 23.8216 | 26.3061 | small anchor |
 | C64D14 | 1.231 M | 47.0859 | 23.8683 | 26.4026 | depth anchor |
 | C64D18 | 1.526 M | 47.0991 | 23.8788 | 26.4231 | depth saturated |
-| **C96D14** | **2.759 M** | 47.1365 | **23.9037** | **26.4630** | selected |
+| C96D14 | 2.759 M | 47.1365 | **23.9037** | **26.4630** | selected |
 | C128D14 | 4.894 M | **47.1665** | 23.7825 | 26.2081 | rejected: cost/external |
 
 ### Module ablation: C96D14, matched 120k protocol
