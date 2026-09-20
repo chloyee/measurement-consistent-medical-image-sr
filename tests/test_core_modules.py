@@ -1,7 +1,12 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "code"))
+
 import torch
 
-from ctsr.data import bicubic_downsample
-from ctsr.models import build_model
+from data_utils import bicubic_downsample
+from util import build_model
 
 
 def test_selected_parameter_count_and_shapes():
