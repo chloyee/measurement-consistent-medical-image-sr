@@ -49,16 +49,9 @@ from this review-stage display repository by design.
 
 - Use the 131 labelled training volumes only.
 - Split strictly by patient/volume: 91 train, 20 validation, 20 held-out test.
-- Stratify no-tumour volumes separately and stratify positive volumes by
-  tumour-burden quartile.
 - Never split at slice level.
-- Use validation only for architecture/checkpoint selection; keep test locked
-  until the final evaluation.
 - Clip CT to `[-1024, 2000] HU` and losslessly encode PNG as
   `stored_uint16 = HU + 1024`.
-- Generate LR online from each HR image using antialiased bicubic ×2
-  downsampling (`align_corners=False`); do not use a separately generated LR
-  archive.
 - Evaluate eight deterministic liver-containing slices per patient, use a
   256×256 centre crop, and aggregate slice → patient → dataset.
 
@@ -72,9 +65,6 @@ early stopping, hyperparameter selection, or model selection. Original PNGs use
 the recovered liver window `WL=40 HU, WW=120 HU`. Evaluation uses eight
 deterministic slices per scan and aggregates slice → series → patient so that
 patients with more scans cannot dominate.
-
-Because only windowed 8-bit PNGs are available, HKU MAE and consistency are
-reported in the 8-bit/window domain, not as uncensored full-range HU errors.
 
 ## Main experiment protocol
 
@@ -196,16 +186,6 @@ model is selected by the joint accuracy, external robustness, consistency and
 cost criterion; exact projection principally guarantees measurement
 consistency rather than producing a large PSNR gain.
 
-## Reporting rules
-
-- Do not tune on HKU or the held-out LiTS test set.
-- Do not mix LiTS-retrained baseline results with the formal official-weight
-  zero-shot table.
-- Record seed, split rule, checkpoint provenance/hash, optimizer steps, stopping
-  event, parameter count and active training time.
-- Report LiTS errors in HU and HKU PNG errors in the 8-bit/window domain.
-- Keep patient-level manifests and all clinical images outside Git.
 
 Code is provided for confidential academic review. Dataset and third-party code
-remain governed by their original licenses. Citation metadata will be added
-when the manuscript obtains a stable public identifier.
+remain governed by their original licenses.
