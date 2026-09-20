@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Registered SPARX capacity ablation and its pre-declared selection rule.
+"""Registered SPARX capacity ablation and validation-only selection provenance.
 
 This review script records the experimental matrix without embedding private
 checkpoint paths or patient manifests. Every row uses the same LiTS patient
@@ -23,46 +23,45 @@ ANCHORS = (
 COMMON_PROTOCOL = {
     "seed": 2026,
     "scale": 2,
-    "max_steps": 120_000,
+    "max_steps": 300_000,
+    "stop_at_step": 120_000,
+    "scheduler_total_steps": 300_000,
     "validation_interval": 5_000,
     "patch_size": 256,
     "batch_size": 16,
     "window_mix_probability": 0.30,
     "kd_weight": 0.20,
     "preliminary_loss": {"initial": 0.10, "anneal": [80_000, 120_000]},
-    "early_stopping": {"min_steps": 80_000, "patience": 8, "min_delta_db": 0.002},
+    "early_stopping": {"enabled": False},
+    "selection_partition": "LiTS val",
+    "selected_architecture": "C96D14",
 }
 
 
-def select(records: list[dict]) -> dict:
-    """Select by LiTS accuracy subject to external robustness and cost."""
+def validate_records(records: list[dict]) -> list[dict]:
+    """Accept validation evidence only. Never infer selection from report tables."""
     required = {item["id"] for item in ANCHORS}
-    if {item["id"] for item in records} != required:
+    if len(records) != len(required) or {item["id"] for item in records} != required:
         raise ValueError("records must contain exactly the five registered anchors")
-    # Reject a candidate if both HKU domains regress from the preceding smaller
-    # anchor; among the remaining candidates choose maximum LiTS PSNR, breaking
-    # ties toward fewer parameters.
-    eligible = []
-    ordered = sorted(records, key=lambda item: item["parameters"])
-    for index, item in enumerate(ordered):
-        if index and item["nc_psnr"] < ordered[index - 1]["nc_psnr"] and item["ce_psnr"] < ordered[index - 1]["ce_psnr"]:
-            continue
-        eligible.append(item)
-    return max(eligible, key=lambda item: (item["lits_psnr"], -item["parameters"]))
+    if any(item.get("partition") != "val" for item in records):
+        raise ValueError("selection records must explicitly identify partition='val'")
+    for item in records:
+        if not isinstance(item.get("lits_val_psnr"), (int, float)):
+            raise ValueError("each record needs a numeric lits_val_psnr")
+    return records
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--show-protocol", action="store_true")
-    parser.add_argument("--records", help="optional aggregate JSON list")
+    parser.add_argument("--records", help="optional LiTS validation evidence JSON list")
     args = parser.parse_args()
     print(json.dumps({"anchors": ANCHORS, "common": COMMON_PROTOCOL}, indent=2))
     if args.records:
         with open(args.records, encoding="utf-8") as handle:
-            print(json.dumps({"selected": select(json.load(handle))}, indent=2))
+            print(json.dumps({"validation_records": validate_records(json.load(handle))}, indent=2))
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
