@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate an official RGB SR checkpoint on the unified grayscale LiTS validation set."""
+"""Evaluate an official RGB SR checkpoint on the explicit grayscale LiTS partition (test by default)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "code"))
 
 import numpy as np
 import torch
@@ -22,8 +22,8 @@ import yaml
 from torch import nn
 from torch.utils.data import DataLoader
 
-from ctsr.data import LitsSlices, bicubic_downsample
-from ctsr.metrics import batch_metrics
+from data_utils import LitsSlices, bicubic_downsample
+from metrics import batch_metrics
 
 
 def atomic_json(path: Path, payload: dict) -> None:
@@ -140,9 +140,10 @@ def build_network(config: dict) -> nn.Module:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument("--partition", choices=("val", "test"), default="test")
     args = parser.parse_args()
     cfg = yaml.safe_load((ROOT / args.config).read_text(encoding="utf-8"))
-    output_dir = ROOT / "experiments" / cfg["experiment_id"]
+    output_dir = ROOT / "reports" / cfg["experiment_id"] / args.partition
     output_dir.mkdir(parents=True, exist_ok=True)
     atomic_json(output_dir / "status.json", {"status": "running", "step": 0})
     started = time.perf_counter()
@@ -172,34 +173,40 @@ def main() -> int:
         network, cfg["model"].get("input_range", 1.0)
     ).cuda().eval()
     dataset = LitsSlices(
-        cfg["data"]["manifest"], "val", cfg["data"]["val_patch_size"],
+        cfg["data"]["manifest"], args.partition, cfg["data"]["val_patch_size"],
         False, cfg["seed"], cfg["data"]["val_slices_per_patient"],
     )
     loader = DataLoader(
         dataset, batch_size=1, shuffle=False, num_workers=8,
         pin_memory=True, persistent_workers=True,
     )
-    totals: defaultdict[str, list[float]] = defaultdict(list)
+    totals = defaultdict(lambda: defaultdict(list))
     with torch.inference_mode():
         for index, batch in enumerate(loader, start=1):
             hr = batch["hr"].cuda(non_blocking=True)
             lr = bicubic_downsample(hr, 2)
             sr = model(lr)
             for name, values in batch_metrics(sr, hr, lr, 2).items():
-                totals[name].extend(values.cpu().tolist())
+                for patient, value in zip(batch["patient_id"], values.cpu().tolist()):
+                    totals[patient][name].append(value)
             if index == 1 or index % 8 == 0 or index == len(dataset):
                 atomic_json(output_dir / "status.json", {
                     "status": "running", "step": index, "total": len(dataset),
                 })
 
-    metrics = {name: float(np.mean(values)) for name, values in totals.items()}
-    record = {"step": len(dataset), **metrics}
-    (output_dir / "validation.jsonl").write_text(
+    if not totals:
+        raise ValueError("Evaluation partition has no slices")
+    metrics = {name: float(np.mean([np.mean(v[name]) for v in totals.values()]))
+               for name in next(iter(totals.values()))}
+    record = {"partition": args.partition, "slices": len(dataset),
+              "patients": len(totals), "checkpoint_sha256": checkpoint_sha256,
+              "aggregation": "slice_mean_then_patient_mean", **metrics}
+    (output_dir / (args.partition + ".jsonl")).write_text(
         json.dumps(record) + "\n", encoding="utf-8"
     )
     atomic_json(output_dir / "status.json", {
         "status": "completed", "step": len(dataset),
-        "best_psnr": metrics["psnr"], "latest": metrics,
+        "partition": args.partition, "latest": metrics,
         "checkpoint_mode": "official_rgb_zero_shot_gray_repeat_mean",
         "checkpoint_sha256": checkpoint_sha256,
         "parameters": sum(parameter.numel() for parameter in model.parameters()),
