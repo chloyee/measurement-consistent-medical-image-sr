@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import defaultdict
 import random
 from pathlib import Path
 
@@ -92,3 +93,51 @@ class LitsSlices(Dataset):
                 if random.random() < 0.5: hr = hr.flip(-2)
                 hr = torch.rot90(hr, random.randrange(4), (-2, -1))
         return {"hr": hr.contiguous(), "patient_id": row["patient_id"], "slice_index": int(row["slice_index"])}
+
+class HKUExternalSlices(Dataset):
+    """Deterministic series-balanced HKU display-domain evaluation view."""
+
+    def __init__(self, manifest: str, slices_per_series: int = 8, crop_size: int = 256):
+        with open(manifest, newline="", encoding="utf-8") as handle:
+            source = list(csv.DictReader(handle))
+        groups: dict[str, list[dict[str, str]]] = defaultdict(list)
+        for row in source:
+            groups[row["series_id"]].append(row)
+        selected: list[dict[str, str]] = []
+        for series in sorted(groups):
+            rows = sorted(
+                groups[series],
+                key=lambda row: (
+                    int(row["source_sequence_token"]) if row["source_sequence_token"].isdigit() else 10**12,
+                    row["png_path"],
+                ),
+            )
+            positions = np.linspace(0, len(rows) - 1, min(slices_per_series, len(rows)), dtype=int)
+            selected.extend(rows[index] for index in positions)
+        self.rows = selected
+        self.crop_size = int(crop_size)
+        self.manifest = str(manifest)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int) -> dict[str, object]:
+        row = self.rows[index]
+        image_path = Path(row["png_path"])
+        if not image_path.is_absolute():
+            image_path = Path(self.manifest).resolve().parents[1] / image_path
+        stored = np.asarray(Image.open(image_path).convert("L"), dtype=np.float32)
+        image = torch.from_numpy(stored / 255.0).unsqueeze(0)
+        _, height, width = image.shape
+        size = self.crop_size
+        if height < size or width < size:
+            raise ValueError(f"HKU image is smaller than {size}: {image_path}")
+        top, left = (height - size) // 2, (width - size) // 2
+        image = image[:, top:top + size, left:left + size].contiguous()
+        return {
+            "hr": image,
+            "patient_id": row["patient_id"],
+            "series_id": row["series_id"],
+            "disease": row["disease"],
+            "path": str(image_path),
+        }
