@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from .data import bicubic_downsample
+from data_utils import bicubic_downsample
 
 
 def batch_metrics(sr: torch.Tensor, hr: torch.Tensor, lr: torch.Tensor, scale: int) -> dict[str, torch.Tensor]:
