@@ -31,17 +31,15 @@ experiments/
 ├── comparison_experiment.py official-checkpoint baseline evaluation
 ├── evaluate_bicubic.py     deterministic interpolation baseline
 ├── evaluate_external.py    patient-balanced HKU-NC/HKU-CE evaluation
-├── parameter_ablation.py   registered C/D capacity anchors and selection rule
-└── module_ablation.py      registered module removals and consistency gate
+├── parameter_ablation.py   C/D capacity anchors and validation provenance
+└── module_ablation.py      module removals and consistency diagnostics
 protocol/
 └── data_split.py           deterministic patient-level LiTS split procedure
 tests/
 └── test_core_modules.py    parameter count, tensor shape, exact projection
 ```
 
-The scripts retain the internal `ctsr` import namespace used to generate the
-reported experiments. Configuration files, manifests and weights are withheld
-from this review-stage display repository by design.
+This repository presents selected core modules and the main, comparison, and ablation experiment workflows. Scripts use the modules in `code/`. Patient manifests, image data, local configurations, and checkpoint files are not included.
 
 ## Standardized data protocol
 
@@ -49,6 +47,8 @@ from this review-stage display repository by design.
 
 - Use the 131 labelled training volumes only.
 - Split strictly by patient/volume: 91 train, 20 validation, 20 held-out test.
+- Use the 20 validation patients for early stopping, checkpoint selection, and architecture selection.
+- Table 1 reports the separate 20-patient internal test partition, labelled LiTS (test).
 - Never split at slice level.
 - Clip CT to `[-1024, 2000] HU` and losslessly encode PNG as
   `stored_uint16 = HU + 1024`.
@@ -119,6 +119,14 @@ cost. Module selection first applies a data-consistency safety gate of
 retained to measure the physical-consistency contribution even when it fails
 that gate.
 
+### Workflow details
+
+Training uses `val` for monitoring and checkpoint selection. In `main_experiment.py`, `--evaluate-only --checkpoint <path> --partition test` evaluates a fixed checkpoint on the held-out partition. The comparison and Bicubic scripts also accept `--partition test`. Evaluation outputs identify their partition, and learned-model LiTS evaluation records the checkpoint SHA-256. Metrics are averaged over slices within each patient, then equally over patients.
+
+For the 120k ablation budget, set `train.max_steps: 300000`, `train.scheduler.total_steps: 300000`, and `train.stop_at_step: 120000`. Disable early stopping for this fixed budget. Full training leaves `stop_at_step` unset and retains the 160k/8-validation early-stopping rule. A step is one optimizer update.
+
+The baseline workflow shown here contains adapters for EDSR, RCAN, OmniSR, SwinIR, DAT-S, MambaIRv2, and PFT-SR. HAT-S and OSEDiff results are included in the tables, while their adapters and third-party implementations are outside this code excerpt.
+
 ## Results
 
 Reported PSNR, SSIM, MAE and parameter counts below follow the manuscript
@@ -129,11 +137,11 @@ review repository.
 
 | Dataset | PSNR (dB) ↑ | SSIM ↑ | MAE ↓ | Data consistency ↓ |
 |---|---:|---:|---:|---:|
-| LiTS17 | 47.140 | 0.9866 | 10.80 HU | **3.358e-05 HU** |
+| LiTS (test) | 47.140 | 0.9866 | 10.80 HU | **3.358e-05 HU** |
 | HKU-NC | 23.926 | 0.9005 | 10.036 (8-bit) | **2.795e-06 (8-bit)** |
 | HKU-CE | 26.511 | 0.9441 | 7.220 (8-bit) | **4.210e-06 (8-bit)** |
 
-### LiTS17 comparison
+### LiTS (test) comparison
 
 | Method | Protocol | Params | PSNR ↑ | SSIM ↑ |
 |---|---|---:|---:|---:|
@@ -175,7 +183,7 @@ review repository.
 | C64D14 | 1.231 M | 47.0859 | 23.8683 | 26.4026 | depth anchor |
 | C64D18 | 1.526 M | 47.0991 | 23.8788 | 26.4231 | depth saturated |
 | C96D14 | 2.759 M | 47.1365 | **23.9037** | **26.4630** | selected |
-| C128D14 | 4.894 M | **47.1665** | 23.7825 | 26.2081 | rejected: cost/external |
+| C128D14 | 4.894 M | **47.1665** | 23.7825 | 26.2081 | larger anchor |
 
 ### Module ablation: C96D14, matched 120k protocol
 
@@ -187,10 +195,7 @@ review repository.
 | Ungated exchange | 47.1352 | 23.9076 | **26.4748** | 3.355e-05 HU |
 | No exact projection | 47.1290 | 23.8871 | 26.4259 | 1.504e-01 HU |
 
-Small domain-specific reversals are reported rather than hidden. The complete
-model is selected by the joint accuracy, external robustness, consistency and
-cost criterion; exact projection principally guarantees measurement
-consistency rather than producing a large PSNR gain.
+The tables report the manuscript results. Architecture and checkpoint selection use LiTS validation, independently of HKU reporting. Exact projection enforces measurement consistency.
 
 
 Code is provided for confidential academic review. Dataset and third-party code
