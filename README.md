@@ -55,8 +55,6 @@ This repository presents selected core modules and the main, comparison, and abl
 - Evaluate eight deterministic liver-containing slices per patient, use a
   256×256 centre crop, and aggregate slice → patient → dataset.
 
-`protocol/data_split.py` implements the rule but no generated patient list is
-committed.
 
 ### HKU external validation
 
