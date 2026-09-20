@@ -18,15 +18,18 @@ VARIANTS = {
 PROTOCOL = {
     "backbone": "C96D14",
     "seed": 2026,
-    "max_steps": 120_000,
+    "max_steps": 300_000,
+    "stop_at_step": 120_000,
+    "scheduler_total_steps": 300_000,
+    "early_stopping": {"enabled": False},
     "initialization": "matched pre-adaptation checkpoint",
-    "selection_metric": "validation PSNR",
+    "selection_partition": "LiTS val",
     "measurement_consistency_limit_hu": 1e-3,
 }
 
 
 def eligible(record: dict) -> bool:
-    """Safety eligibility used before comparing validation PSNR."""
+    """Report consistency as a diagnostic, not a model-selection rule."""
     return float(record["data_consistency_hu"]) <= PROTOCOL["measurement_consistency_limit_hu"]
 
 
@@ -38,8 +41,7 @@ def main() -> int:
     if args.records:
         with open(args.records, encoding="utf-8") as handle:
             records = json.load(handle)
-        valid = [item for item in records if eligible(item)]
-        payload["selected"] = max(valid, key=lambda item: float(item["psnr"])) if valid else None
+        payload["records"] = [{**item, "passes_consistency_check": eligible(item)} for item in records]
     print(json.dumps(payload, indent=2))
     return 0
 
