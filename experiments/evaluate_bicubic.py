@@ -8,14 +8,14 @@ from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "code"))
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from ctsr.data import LitsSlices, bicubic_downsample
-from ctsr.metrics import batch_metrics
+from data_utils import LitsSlices, bicubic_downsample
+from metrics import batch_metrics
 
 
 def main() -> None:
