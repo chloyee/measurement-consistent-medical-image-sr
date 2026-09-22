@@ -7,7 +7,8 @@ are not part of the public API.
 
 from __future__ import annotations
 
-from functools import lru_cache
+import math
+from torch.autograd.function import once_differentiable
 
 import torch
 import torch.nn as nn
@@ -161,59 +162,150 @@ class SparseExchangeBackbone(nn.Module):
         }
 
 
-@lru_cache(maxsize=16)
-def _bicubic_right_inverse_1d(high_size: int, low_size: int) -> torch.Tensor:
-    basis = torch.eye(high_size, dtype=torch.float64).view(high_size, 1, 1, high_size)
-    operator = F.interpolate(
-        basis,
-        size=(1, low_size),
-        mode="bicubic",
-        align_corners=False,
-        antialias=True,
-    )[:, 0, 0, :].transpose(0, 1).contiguous()
-    gram = operator @ operator.transpose(0, 1)
-    identity = torch.eye(low_size, dtype=torch.float64)
-    return (operator.transpose(0, 1) @ torch.linalg.solve(gram, identity)).contiguous()
+def _downsample(image, size):
+    return F.interpolate(image, size=size, mode="bicubic",
+                         align_corners=False, antialias=True)
+
+
+def _adjoint_vjp(low, high_size):
+    """D^T low from the VJP of the exact forward downsampler.
+
+    _LiftVJP supplies first-order training gradients without double-backward
+    through antialiased interpolation. Also works inside inference_mode.
+    """
+    with torch.inference_mode(False), torch.enable_grad():
+        vector = low.detach().clone()
+        high = torch.zeros((*vector.shape[:-2], *high_size),
+                           device=vector.device, dtype=vector.dtype,
+                           requires_grad=True)
+        degraded = _downsample(high, vector.shape[-2:])
+        return torch.autograd.grad(degraded, high, grad_outputs=vector,
+                                   create_graph=False)[0]
+
+
+def _gram_solve(rhs, high_size, rtol, atol, max_iter):
+    """Solve DD^T z = rhs independently per batch/channel using CG."""
+    with torch.inference_mode(False), torch.no_grad():
+        b = rhs.detach().clone()
+        if not torch.isfinite(b).all():
+            raise ValueError("Projection received non-finite values")
+        def gram(v):
+            return _downsample(_adjoint_vjp(v, high_size), b.shape[-2:])
+        def dot(a, c):
+            return (a * c).sum(dim=(-2, -1), keepdim=True)
+        x = torch.zeros_like(b)
+        r = b.clone()
+        p = r.clone()
+        rr = dot(r, r)
+        threshold = torch.maximum(rtol * dot(b, b).sqrt(),
+                                  b.new_tensor(atol)).square()
+        for _ in range(max_iter):
+            active = rr > threshold
+            if not active.any():
+                r = b - gram(x)
+                rr = dot(r, r)
+                if torch.all(rr <= threshold):
+                    return x
+                p = r.clone()
+                active = rr > threshold
+            ap = gram(p)
+            denom = dot(p, ap)
+            if torch.any(active & ((denom <= 0) | ~torch.isfinite(denom))):
+                raise RuntimeError("D D^T solve lost positive definiteness")
+            safe_denom = torch.where(active, denom, torch.ones_like(denom))
+            alpha = torch.where(active, rr / safe_denom, torch.zeros_like(rr))
+            x = x + alpha * p
+            r = r - alpha * ap
+            rr_new = dot(r, r)
+            safe_rr = torch.where(active, rr, torch.ones_like(rr))
+            beta = torch.where(active, rr_new / safe_rr, torch.zeros_like(rr))
+            p = torch.where(rr_new > threshold, r + beta * p, torch.zeros_like(p))
+            rr = rr_new
+        actual = b - gram(x)
+        if torch.any(dot(actual, actual) > threshold):
+            raise RuntimeError("Autograd projection CG did not converge; "
+                               "increase max_iter or inspect dtype/tolerances")
+        return x
+
+
+class _LiftVJP(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, low, high_size, rtol, atol, max_iter):
+        ctx.high_size = high_size
+        ctx.low_size = tuple(low.shape[-2:])
+        ctx.settings = (rtol, atol, max_iter)
+        z = _gram_solve(low, high_size, rtol, atol, max_iter)
+        return _adjoint_vjp(z, high_size)
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_output):
+        # B = D^T(DD^T)^-1, hence B^T = (DD^T)^-1 D.
+        grad_low = _gram_solve(_downsample(grad_output, ctx.low_size),
+                               ctx.high_size, *ctx.settings)
+        return grad_low, None, None, None, None
 
 
 class BicubicExactProjector(nn.Module):
-    """Project an HR estimate onto the affine measurement set D(x)=LR."""
+    """Minimum-norm affine projection with an autograd adjoint.
 
-    def __init__(self, scale: int = 2, refinement_steps: int = 2):
+    'Exact' identifies the affine target, not exact floating-point arithmetic.
+    Each lift solves DD^T to rtol/atol and raises on non-convergence.
+    First-order training gradients are supported, including measurement grads.
+    The API and empty state_dict remain compatible with the matrix projector.
+    """
+    def __init__(self, scale=2, refinement_steps=2, *, rtol=None,
+                 atol=None, max_iter=100):
         super().__init__()
+        if int(scale) != scale or scale < 1:
+            raise ValueError("scale must be a positive integer")
+        if int(refinement_steps) != refinement_steps or refinement_steps < 1:
+            raise ValueError("refinement_steps must be a positive integer")
+        if int(max_iter) != max_iter or max_iter < 1:
+            raise ValueError("max_iter must be a positive integer")
+        for value in (rtol, atol):
+            if value is not None and (not math.isfinite(value) or value < 0):
+                raise ValueError("tolerances must be finite and nonnegative")
+        if rtol == 0 and atol == 0:
+            raise ValueError("at least one tolerance must be positive")
         self.scale = int(scale)
         self.refinement_steps = int(refinement_steps)
-        self._device_cache: dict[tuple[int, int, str, torch.dtype], torch.Tensor] = {}
-
-    def _right_inverse(
-        self, high_size: int, low_size: int, reference: torch.Tensor
-    ) -> torch.Tensor:
-        key = (high_size, low_size, str(reference.device), reference.dtype)
-        matrix = self._device_cache.get(key)
-        if matrix is None:
-            matrix = _bicubic_right_inverse_1d(high_size, low_size).to(
-                device=reference.device, dtype=reference.dtype
-            )
-            self._device_cache[key] = matrix
-        return matrix
+        self.rtol, self.atol, self.max_iter = rtol, atol, int(max_iter)
 
     @staticmethod
-    def downsample(image: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
-        return F.interpolate(
-            image, size=size, mode="bicubic", align_corners=False, antialias=True
-        )
+    def downsample(image, size):
+        return _downsample(image, size)
 
-    def lift(self, low: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
-        inverse_h = self._right_inverse(size[0], low.shape[-2], low)
-        inverse_w = self._right_inverse(size[1], low.shape[-1], low)
-        return inverse_h @ low @ inverse_w.transpose(0, 1)
+    @staticmethod
+    def adjoint(low, size):
+        """Diagnostic D^T application, detached from the training graph."""
+        return _adjoint_vjp(low, tuple(size))
 
-    def forward(self, candidate: torch.Tensor, measurement: torch.Tensor) -> torch.Tensor:
+    def lift(self, low, size):
+        if low.ndim != 4 or not low.is_floating_point():
+            raise ValueError("lift expects floating NCHW data")
+        size = tuple(int(v) for v in size)
+        if len(size) != 2 or any(h < l for h, l in zip(size, low.shape[-2:])):
+            raise ValueError("HR dimensions must not be smaller than LR")
+        dtype = torch.float64 if low.dtype == torch.float64 else torch.float32
+        rtol = self.rtol if self.rtol is not None else (1e-10 if dtype == torch.float64 else 1e-6)
+        atol = self.atol if self.atol is not None else (1e-12 if dtype == torch.float64 else 1e-7)
+        with torch.autocast(device_type=low.device.type, enabled=False):
+            lifted = _LiftVJP.apply(low.to(dtype), size, rtol, atol, self.max_iter)
+        return lifted.to(low.dtype)
+
+    def forward(self, candidate, measurement):
+        if candidate.ndim != 4 or measurement.ndim != 4:
+            raise ValueError("Projection expects NCHW tensors")
+        if candidate.shape[:2] != measurement.shape[:2]:
+            raise ValueError("Candidate and measurement batch/channels must match")
+        if candidate.device != measurement.device or candidate.dtype != measurement.dtype:
+            raise ValueError("Candidate and measurement device/dtype must match")
+        if not candidate.is_floating_point():
+            raise ValueError("Projection expects floating tensors")
         projected = candidate
         for _ in range(self.refinement_steps):
-            residual = measurement - self.downsample(
-                projected, measurement.shape[-2:]
-            )
+            residual = measurement - self.downsample(projected, measurement.shape[-2:])
             projected = projected + self.lift(residual, candidate.shape[-2:])
         return projected
 
