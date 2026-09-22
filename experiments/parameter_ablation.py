@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Registered SPARX capacity ablation and validation-only selection provenance.
+"""SPARX capacity ablation with validation-only model selection.
 
-This review script records the experimental matrix without embedding private
-checkpoint paths or patient manifests. Every row uses the same LiTS patient
+Each configuration uses the same LiTS patient
 split, 120k adaptation budget, WindowMix/KD losses, and evaluation protocol.
 """
 
