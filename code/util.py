@@ -1,9 +1,4 @@
-"""Core SPARX modules used by the paper experiments.
-
-This module intentionally contains only the selected C96D14 family and the
-ablation switches needed by the released tables. Historical candidate trunks
-are not part of the public API.
-"""
+"""SPARX backbone, sparse expert exchange, and autograd-adjoint projection."""
 
 from __future__ import annotations
 
@@ -252,7 +247,7 @@ class BicubicExactProjector(nn.Module):
     'Exact' identifies the affine target, not exact floating-point arithmetic.
     Each lift solves DD^T to rtol/atol and raises on non-convergence.
     First-order training gradients are supported, including measurement grads.
-    The API and empty state_dict remain compatible with the matrix projector.
+    The projector has no trainable parameters or persistent buffers.
     """
     def __init__(self, scale=2, refinement_steps=2, *, rtol=None,
                  atol=None, max_iter=100):
@@ -413,7 +408,7 @@ class SPARX(nn.Module):
 
 def build_model(config: dict) -> SPARX:
     if config.get("variant") not in {"sparx", "safenull_sparse_exchange"}:
-        raise ValueError("the review package exposes only the selected SPARX family")
+        raise ValueError("unsupported SPARX model variant")
     return SPARX(
         scale=config.get("scale", 2),
         channels=config.get("channels", 96),
