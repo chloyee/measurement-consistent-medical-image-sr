@@ -13,7 +13,7 @@ SPARX consists of:
 - content-routed compact, axial, and dilated large-field experts;
 - a learned bounded gate controlling expert-to-backbone exchange;
 - dual wide-window and liver-window stems with WindowMix training;
-- an exact bicubic affine projector enforcing `D(SR) = LR` numerically; and
+- an autograd-adjoint bicubic affine projector enforcing `D(SR) = LR` to solver tolerance; and
 - optional frozen-teacher distillation plus an annealed preliminary-image loss.
 
 The selected C96D14 student contains 2.759 M parameters. Distillation is used
@@ -28,7 +28,7 @@ code/
 └── metrics.py              PSNR, SSIM, MAE, data consistency
 experiments/
 ├── main_experiment.py      training, validation, scheduling, KD, early stopping
-├── comparison_experiment.py official-checkpoint baseline evaluation
+├── comparison_experiment.py fine-tuned checkpoint evaluation
 ├── evaluate_bicubic.py     deterministic interpolation baseline
 ├── evaluate_external.py    patient-balanced HKU-NC/HKU-CE evaluation
 ├── parameter_ablation.py   C/D capacity anchors and validation provenance
@@ -89,8 +89,7 @@ PSNR, early-stopping state and timing.
 
 ## Comparison protocol
 
-All learned baselines use author-released ×2 checkpoints in a
-frozen zero-shot setting. RGB baselines receive a three-channel repeat of CT and
+Learned baselines are fine-tuned on CT from pretrained checkpoints using public code and each method's original training configuration. They share SPARX's LiTS patient split and training images, degradation, evaluation preprocessing, and experimental environment. The comparison script evaluates the resulting fine-tuned checkpoints. RGB baselines receive a three-channel repeat of CT and
 their output is reduced by channel mean. The same degradation, crop, slice selection, metric code and
 aggregation are used for every method. Checkpoint SHA-256 validation is included
 in `comparison_experiment.py`.
@@ -110,8 +109,7 @@ Full training of the selected C96D14 model allows up to 300k steps, with the
 160k/8-validation early-stopping rule above. The 120k Full row and the main
 comparison therefore correspond to different training budgets.
 
-The capacity rule considers LiTS accuracy, both external domains, and parameter
-cost. Module selection first applies a data-consistency safety gate of
+Architecture and checkpoint selection use LiTS validation only. HKU results do not enter the selection rule. Module selection first applies a data-consistency safety gate of
 `DC-HU ≤ 1e-3`, then compares validation PSNR. The no-projection experiment is
 retained to measure the physical-consistency contribution even when it fails
 that gate.
@@ -127,3 +125,22 @@ The baseline workflow shown here contains adapters for EDSR, RCAN, OmniSR, SwinI
 
 ### Dataset and third-party code
 remain governed by their original licenses.
+
+## Autograd-adjoint projection
+
+The projector in `code/util.py` evaluates the adjoint with `torch.autograd.grad` on the same bicubic downsampler (`align_corners=False`, `antialias=True`). It solves `D D^T z = residual` with conjugate gradients, then applies `D^T z`. There is no separate interpolation upsampler or dense downsampling matrix in the correction path. The existing two refinement steps and checkpoint parameter keys are preserved.
+
+Use PyTorch **2.4.0**. FP32 defaults are relative tolerance `1e-6`, absolute tolerance `1e-7`, and at most 100 CG iterations. FP64 audit defaults are `1e-10` and `1e-12`. Non-converged solves raise an error. First-order training gradients, `no_grad`, and `inference_mode` are supported. The correction solve runs in FP32 or FP64, outside autocast.
+
+Run the supplied validation on the experiment server before training:
+
+```bash
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+python -m pytest -q tests/test_autograd_projector.py
+```
+
+The CUDA test is skipped without a CUDA device. CPU validation on PyTorch 2.4.0 passed 11 checks, including the adjoint identity, dense-reference agreement, null-space preservation, first-order gradients, inference modes, and a 512×512 output. CUDA experiments have not been run in this update.
+
+Use separate output directories for the new runs. Re-evaluate reconstruction and downstream metrics and remeasure latency and peak allocated memory with the new implementation. Earlier measurements are not new-autograd measurements. Complexity measurements use **256×256 LR inputs and 512×512 SR outputs**, batch size 1, FP32, 50 warm-up iterations, synchronized timing, and `torch.cuda.max_memory_allocated()`.
+
+The frozen KD teacher uses the same C96D14 architecture as the student and is independently pretrained on LiTS for at most 300k optimizer steps, without HKU data. KD matches final SR outputs using L1 on wide-range LiTS views with weight 0.20. Sparsity refers to selected exchange depths and dilated sampling. All three experts participate in soft fusion.
