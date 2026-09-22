@@ -31,12 +31,12 @@ experiments/
 ├── comparison_experiment.py fine-tuned checkpoint evaluation
 ├── evaluate_bicubic.py     deterministic interpolation baseline
 ├── evaluate_external.py    patient-balanced HKU-NC/HKU-CE evaluation
-├── parameter_ablation.py   C/D capacity anchors and validation provenance
+├── parameter_ablation.py   model-scale comparisons and validation selection
 └── module_ablation.py      module removals and consistency diagnostics
 protocol/
 └── data_split.py           deterministic patient-level LiTS split procedure
 tests/
-└── test_core_modules.py    parameter count, tensor shape, exact projection
+└── test_core_modules.py    parameter count, tensor shape, measurement projection
 ```
 
 This repository presents selected core modules and the main, comparison, and ablation experiment workflows. Scripts use the modules in `code/`. Patient manifests, image data, local configurations, and checkpoint files are not included.
@@ -130,17 +130,17 @@ remain governed by their original licenses.
 
 The projector in `code/util.py` evaluates the adjoint with `torch.autograd.grad` on the same bicubic downsampler (`align_corners=False`, `antialias=True`). It solves `D D^T z = residual` with conjugate gradients, then applies `D^T z`. There is no separate interpolation upsampler or dense downsampling matrix in the correction path. The existing two refinement steps and checkpoint parameter keys are preserved.
 
-Use PyTorch **2.4.0**. FP32 defaults are relative tolerance `1e-6`, absolute tolerance `1e-7`, and at most 100 CG iterations. FP64 audit defaults are `1e-10` and `1e-12`. Non-converged solves raise an error. First-order training gradients, `no_grad`, and `inference_mode` are supported. The correction solve runs in FP32 or FP64, outside autocast.
+Use PyTorch **2.4.0**. FP32 defaults are relative tolerance `1e-6`, absolute tolerance `1e-7`, and at most 100 CG iterations. FP64 defaults are `1e-10` and `1e-12`. Non-converged solves raise an error. First-order training gradients, `no_grad`, and `inference_mode` are supported. The correction solve runs in FP32 or FP64, outside autocast.
 
-Run the supplied validation on the experiment server before training:
+Run the numerical tests before training:
 
 ```bash
 python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 python -m pytest -q tests/test_autograd_projector.py
 ```
 
-The CUDA test is skipped without a CUDA device. CPU validation on PyTorch 2.4.0 passed 11 checks, including the adjoint identity, dense-reference agreement, null-space preservation, first-order gradients, inference modes, and a 512×512 output. CUDA experiments have not been run in this update.
+The tests cover the adjoint identity, dense-reference agreement, null-space preservation, first-order gradients, inference modes, and a 512×512 output. CUDA tests run when a CUDA device is available.
 
-Use separate output directories for the new runs. Re-evaluate reconstruction and downstream metrics and remeasure latency and peak allocated memory with the new implementation. Earlier measurements are not new-autograd measurements. Complexity measurements use **256×256 LR inputs and 512×512 SR outputs**, batch size 1, FP32, 50 warm-up iterations, synchronized timing, and `torch.cuda.max_memory_allocated()`.
+Complexity measurements use **256×256 LR inputs and 512×512 SR outputs**, batch size 1, FP32, 50 warm-up iterations, synchronized timing, and `torch.cuda.max_memory_allocated()`.
 
 The frozen KD teacher uses the same C96D14 architecture as the student and is independently pretrained on LiTS for at most 300k optimizer steps, without HKU data. KD matches final SR outputs using L1 on wide-range LiTS views with weight 0.20. Sparsity refers to selected exchange depths and dilated sampling. All three experts participate in soft fusion.
