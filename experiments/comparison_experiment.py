@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate an official RGB SR checkpoint on the explicit grayscale LiTS partition (test by default)."""
+"""Evaluate a CT-fine-tuned RGB SR checkpoint on the LiTS partition (test by default)."""
 
 from __future__ import annotations
 
@@ -154,9 +154,9 @@ def main() -> int:
     expected_hash = cfg["model"].get("checkpoint_sha256")
     expected_prefix = cfg["model"].get("checkpoint_sha256_prefix")
     if expected_hash and checkpoint_sha256 != expected_hash:
-        raise RuntimeError("Checkpoint SHA256 does not match the audited config")
+        raise RuntimeError("Checkpoint SHA256 does not match the configured checkpoint")
     if expected_prefix and not checkpoint_sha256.startswith(expected_prefix):
-        raise RuntimeError("Checkpoint SHA256 prefix does not match its official filename")
+        raise RuntimeError("Checkpoint SHA256 prefix does not match the configured prefix")
     checkpoint = torch.load(
         checkpoint_path, map_location="cpu", weights_only=True
     )
@@ -207,7 +207,7 @@ def main() -> int:
     atomic_json(output_dir / "status.json", {
         "status": "completed", "step": len(dataset),
         "partition": args.partition, "latest": metrics,
-        "checkpoint_mode": "official_rgb_zero_shot_gray_repeat_mean",
+        "checkpoint_mode": cfg["checkpoint"].get("training_stage", "unspecified"),
         "checkpoint_sha256": checkpoint_sha256,
         "parameters": sum(parameter.numel() for parameter in model.parameters()),
         "wall_seconds": time.perf_counter() - started,
