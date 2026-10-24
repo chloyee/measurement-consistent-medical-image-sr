@@ -40,8 +40,6 @@ tests/
 └── test_autograd_projector.py adjoint, gradients, consistency, CUDA checks
 ```
 
-This repository presents selected core modules and the main, comparison, and ablation experiment workflows. Scripts use the modules in `code/`. Patient manifests, image data, local configurations, and checkpoint files are not included.
-
 ## Standardized data protocol
 
 ### LiTS17
@@ -49,7 +47,6 @@ This repository presents selected core modules and the main, comparison, and abl
 - Use the 131 labelled training volumes only.
 - Split strictly by patient/volume: 91 train, 20 validation, 20 held-out test.
 - Use the 20 validation patients for early stopping, checkpoint selection, and architecture selection.
-- Table 1 reports the separate 20-patient internal test partition, labelled LiTS (test).
 - Never split at slice level.
 - Clip CT to `[-1024, 2000] HU` and losslessly encode PNG as
   `stored_uint16 = HU + 1024`.
@@ -87,30 +84,6 @@ patients with more scans cannot dominate.
 “300k” denotes the maximum number of optimizer updates, not epochs. The saved
 state includes model, optimizer, scheduler, AMP scaler, step, best validation
 PSNR, early-stopping state and timing.
-
-## Comparison protocol
-
-Learned baselines are fine-tuned on CT from pretrained checkpoints using public code and each method's original training configuration. They share SPARX's LiTS patient split and training images, degradation, evaluation preprocessing, and experimental environment. The comparison script evaluates the resulting fine-tuned checkpoints. Set `checkpoint.training_stage: ct_finetuned` in the evaluation configuration to record the checkpoint type. RGB baselines receive a three-channel repeat of CT and
-their output is reduced by channel mean. The same degradation, crop, slice selection, metric code and
-aggregation are used for every method. Checkpoint SHA-256 validation is included
-in `comparison_experiment.py`.
-
-Compared methods: Bicubic, EDSR, RCAN, OmniSR, SwinIR, HAT-S, DAT-S,
-MambaIRv2, PFT-SR_class, PFT-SR_light, and OSEDiff. Third-party implementations
-and weights are not redistributed here.
-
-## Ablation protocol
-
-Parameter anchors are C64D8, C64D14, C64D18, C96D14 and C128D14. Module
-ablations are no KD, no large-field exchange, ungated exchange, and no exact
-projection. Ablations share a 300k-step schedule configuration and stop at
-120k optimizer updates, when the preliminary-loss weight reaches zero. They use
-matched initialization, patient split, seed, loss and validation interval.
-Full training of the selected C96D14 model allows up to 300k steps, with the
-160k/8-validation early-stopping rule above. The 120k Full row and the main
-comparison therefore correspond to different training budgets.
-
-Architecture and checkpoint selection use LiTS validation only. HKU results do not enter the selection rule. Measurement consistency is reported as a diagnostic for all variants, including the no-projection ablation. It is not a model-selection gate.
 
 ### Workflow details
 
