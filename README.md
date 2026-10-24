@@ -85,15 +85,6 @@ patients with more scans cannot dominate.
 state includes model, optimizer, scheduler, AMP scaler, step, best validation
 PSNR, early-stopping state and timing.
 
-### Workflow details
-
-Training uses `val` for monitoring and checkpoint selection. In `main_experiment.py`, `--evaluate-only --checkpoint <path> --partition test` evaluates a fixed checkpoint on the held-out partition. The comparison and Bicubic scripts also accept `--partition test`. Evaluation outputs identify their partition, and learned-model LiTS evaluation records the checkpoint SHA-256. Metrics are averaged over slices within each patient, then equally over patients.
-
-For the 120k ablation budget, set `train.max_steps: 300000`, `train.scheduler.total_steps: 300000`, and `train.stop_at_step: 120000`. Disable early stopping for this fixed budget. Full training leaves `stop_at_step` unset and retains the 160k/8-validation early-stopping rule. A step is one optimizer update.
-
-The baseline workflow shown here contains adapters for EDSR, RCAN, OmniSR, SwinIR, DAT-S, MambaIRv2, and PFT-SR. HAT-S and OSEDiff results are included in the tables, while their adapters and third-party implementations are outside this code excerpt.
-
-
 ### Dataset and third-party code
 remain governed by their original licenses.
 
