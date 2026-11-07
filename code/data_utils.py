@@ -1,143 +1,114 @@
+"""User-provided slice data and matched bicubic degradation."""
 from __future__ import annotations
-
 import csv
-from collections import defaultdict
 import random
 from pathlib import Path
-
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
 from torch.utils.data import Dataset
 
 
-def bicubic_downsample(hr: torch.Tensor, scale: int) -> torch.Tensor:
-    return F.interpolate(hr, scale_factor=1 / scale, mode="bicubic", align_corners=False, antialias=True)
+def bicubic_downsample(hr, scale=2):
+    if any(n % scale for n in hr.shape[-2:]):
+        raise ValueError("HR dimensions must be divisible by scale")
+    return F.interpolate(hr, size=tuple(n // scale for n in hr.shape[-2:]),
+                         mode="bicubic", align_corners=False, antialias=True)
 
 
-def liver_window_view(
-    image: torch.Tensor, source_lower_hu: float = -1024.0,
-    source_width_hu: float = 3024.0, window_center_hu: float = 40.0,
-    window_width_hu: float = 120.0,
-) -> torch.Tensor:
-    """Map normalized source-window pixels into the confirmed HKU liver window."""
-    if source_width_hu <= 0 or window_width_hu <= 0:
-        raise ValueError("window widths must be positive")
-    hu = image * source_width_hu + source_lower_hu
-    window_lower = window_center_hu - window_width_hu / 2.0
-    return ((hu - window_lower) / window_width_hu).clamp(0.0, 1.0)
+def read_manifest(path):
+    path = Path(path).resolve()
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if not {"patient_id", "partition", "image_path"} <= set(reader.fieldnames or []):
+            raise ValueError("Manifest requires patient_id, partition, image_path")
+        rows = list(reader)
+    patients, images = {}, set()
+    for row in rows:
+        patient, partition = row["patient_id"].strip(), row["partition"].strip()
+        if not patient or partition not in {"train", "val", "test"}:
+            raise ValueError("Use nonempty patient IDs and train/val/test partitions")
+        if patient in patients and patients[patient] != partition:
+            raise ValueError("A patient occurs in multiple partitions")
+        patients[patient] = partition
+        image = Path(row["image_path"])
+        image = (path.parent / image).resolve() if not image.is_absolute() else image.resolve()
+        if image in images:
+            raise ValueError("Duplicate image path in manifest")
+        images.add(image)
+        row.update(patient_id=patient, partition=partition, image_path=str(image))
+        row["series_id"] = row.get("series_id") or patient
+    if not rows:
+        raise ValueError("Manifest is empty")
+    return rows
 
 
-def mix_liver_window_views(
-    image: torch.Tensor, probability: float
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Replace independent batch samples with liver-window views before LR synthesis."""
-    if not 0.0 <= probability <= 1.0:
-        raise ValueError("window-mix probability must be inside [0, 1]")
-    if probability == 0.0:
-        return image, image.new_zeros((image.shape[0], 1, 1, 1))
-    select = torch.rand(
-        image.shape[0], 1, 1, 1, device=image.device
-    ) < probability
-    mixed = torch.where(select, liver_window_view(image), image)
-    return mixed, select.to(image.dtype)
+def load_slice(path):
+    path = Path(path)
+    lower, width = 0.0, 0.0
+    if path.suffix == ".npz":
+        with np.load(path, allow_pickle=False) as item:
+            image = item["image"].astype(np.float32)
+            if "lower_hu" in item and "width_hu" in item:
+                lower, width = float(item["lower_hu"]), float(item["width_hu"])
+    elif path.suffix == ".npy":
+        image = np.load(path, allow_pickle=False).astype(np.float32)
+    else:
+        raise ValueError("Use .npy or .npz slices")
+    if image.ndim != 2 or min(image.shape) < 2 or not np.isfinite(image).all():
+        raise ValueError("Each slice must be a finite two-dimensional array")
+    if image.min() < 0 or image.max() > 1:
+        raise ValueError("Store normalized reference intensities in [0, 1]")
+    if not np.isfinite(lower) or not np.isfinite(width) or width < 0:
+        raise ValueError("Invalid intensity metadata")
+    return torch.from_numpy(image.copy()).unsqueeze(0), lower, width
 
 
-class LitsSlices(Dataset):
-    def __init__(self, manifest: str, partition: str, patch_size: int | None, training: bool, seed: int = 2026,
-                 val_slices_per_patient: int = 8):
-        with open(manifest, newline="", encoding="utf-8") as handle:
-            rows = [row for row in csv.DictReader(handle) if row["partition"] == partition]
-        self.training = training
-        self.patch_size = patch_size
-        self.seed = seed
-        if training:
-            liver = [r for r in rows if int(r["liver_pixels"]) > 0]
-            non_liver = [r for r in rows if int(r["liver_pixels"]) == 0]
-            rng = random.Random(seed)
-            rng.shuffle(non_liver)
-            rows = liver + non_liver[: max(1, len(liver) // 3)]
-        else:
-            selected = []
-            patients = sorted({r["patient_id"] for r in rows})
-            for patient in patients:
-                candidates = [r for r in rows if r["patient_id"] == patient and int(r["liver_pixels"]) > 0]
-                if not candidates:
-                    candidates = [r for r in rows if r["patient_id"] == patient]
-                positions = np.linspace(0, len(candidates) - 1, min(val_slices_per_patient, len(candidates)), dtype=int)
-                selected.extend(candidates[i] for i in positions)
-            rows = selected
-        self.rows = rows
+class SliceDataset(Dataset):
+    def __init__(self, manifest, partition, patch_size=None, training=False):
+        if training and partition != "train":
+            raise ValueError("Optimization uses the train partition")
+        self.rows = [r for r in read_manifest(manifest) if r["partition"] == partition]
+        if not self.rows:
+            raise ValueError(f"Empty partition: {partition}")
+        self.patch_size, self.training = patch_size, training
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.rows)
 
-    def __getitem__(self, index: int) -> dict[str, object]:
+    def __getitem__(self, index):
         row = self.rows[index]
-        stored = np.asarray(Image.open(row["image_path"]), dtype=np.int32)
-        hr = torch.from_numpy(stored.astype(np.float32) / 3024.0).unsqueeze(0)
-        if self.patch_size is not None:
-            _, height, width = hr.shape
-            size = self.patch_size
-            if height < size or width < size:
-                raise ValueError(f"Image smaller than patch {size}: {row['image_path']}")
-            if self.training:
-                top = random.randint(0, height - size)
-                left = random.randint(0, width - size)
-            else:
-                top, left = (height - size) // 2, (width - size) // 2
-            hr = hr[:, top:top + size, left:left + size]
-            if self.training:
-                if random.random() < 0.5: hr = hr.flip(-1)
-                if random.random() < 0.5: hr = hr.flip(-2)
-                hr = torch.rot90(hr, random.randrange(4), (-2, -1))
-        return {"hr": hr.contiguous(), "patient_id": row["patient_id"], "slice_index": int(row["slice_index"])}
+        image, lower, width = load_slice(row["image_path"])
+        h, w = image.shape[-2:]
+        if self.patch_size:
+            p = int(self.patch_size)
+            if p % 2 or p < 2 or min(h, w) < p:
+                raise ValueError("Use an even patch size that fits each image")
+            top = random.randint(0, h-p) if self.training else (h-p)//2
+            left = random.randint(0, w-p) if self.training else (w-p)//2
+            image = image[:, top:top+p, left:left+p]
+        elif h % 2 or w % 2:
+            raise ValueError("Full images must have even height and width")
+        if self.training:
+            if random.random() < .5:
+                image = image.flip(-1)
+            if random.random() < .5:
+                image = image.flip(-2)
+            image = torch.rot90(image, random.randrange(4), (-2, -1))
+        return {"hr": image.contiguous(), "patient_id": row["patient_id"],
+                "series_id": row["series_id"], "lower_hu": lower, "width_hu": width}
 
-class HKUExternalSlices(Dataset):
-    """Deterministic series-balanced HKU display-domain evaluation view."""
 
-    def __init__(self, manifest: str, slices_per_series: int = 8, crop_size: int = 256):
-        with open(manifest, newline="", encoding="utf-8") as handle:
-            source = list(csv.DictReader(handle))
-        groups: dict[str, list[dict[str, str]]] = defaultdict(list)
-        for row in source:
-            groups[row["series_id"]].append(row)
-        selected: list[dict[str, str]] = []
-        for series in sorted(groups):
-            rows = sorted(
-                groups[series],
-                key=lambda row: (
-                    int(row["source_sequence_token"]) if row["source_sequence_token"].isdigit() else 10**12,
-                    row["png_path"],
-                ),
-            )
-            positions = np.linspace(0, len(rows) - 1, min(slices_per_series, len(rows)), dtype=int)
-            selected.extend(rows[index] for index in positions)
-        self.rows = selected
-        self.crop_size = int(crop_size)
-        self.manifest = str(manifest)
-
-    def __len__(self) -> int:
-        return len(self.rows)
-
-    def __getitem__(self, index: int) -> dict[str, object]:
-        row = self.rows[index]
-        image_path = Path(row["png_path"])
-        if not image_path.is_absolute():
-            image_path = Path(self.manifest).resolve().parents[1] / image_path
-        stored = np.asarray(Image.open(image_path).convert("L"), dtype=np.float32)
-        image = torch.from_numpy(stored / 255.0).unsqueeze(0)
-        _, height, width = image.shape
-        size = self.crop_size
-        if height < size or width < size:
-            raise ValueError(f"HKU image is smaller than {size}: {image_path}")
-        top, left = (height - size) // 2, (width - size) // 2
-        image = image[:, top:top + size, left:left + size].contiguous()
-        return {
-            "hr": image,
-            "patient_id": row["patient_id"],
-            "series_id": row["series_id"],
-            "disease": row["disease"],
-            "path": str(image_path),
-        }
+def mix_liver_window_views(image, probability, lower_hu, width_hu):
+    if not 0 <= probability <= 1:
+        raise ValueError("View probability must be in [0,1]")
+    domain = image.new_zeros((image.shape[0], 1, 1, 1))
+    if probability == 0:
+        return image, domain
+    lower = torch.as_tensor(lower_hu, device=image.device, dtype=image.dtype).reshape(-1,1,1,1)
+    width = torch.as_tensor(width_hu, device=image.device, dtype=image.dtype).reshape(-1,1,1,1)
+    if torch.any(width <= 0):
+        raise ValueError("Liver-window augmentation requires lower_hu and positive width_hu per slice")
+    domain = (torch.rand_like(domain) < probability).to(image.dtype)
+    window = ((image * width + lower + 20.0) / 120.0).clamp(0,1)
+    return torch.where(domain.bool(), window, image), domain
