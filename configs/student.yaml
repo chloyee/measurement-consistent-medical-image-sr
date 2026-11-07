@@ -1,49 +1,37 @@
-{
-  "seed": 2026,
-  "output_dir": "outputs/student",
-  "model": {
-    "variant": "sparx",
-    "scale": 2,
-    "channels": 96,
-    "depth": 14,
-    "exchange_positions": [
-      2,
-      5
-    ],
-    "dual_window_stem": true,
-    "exchange_gate_mode": "learned",
-    "projection_refinements": 2,
-    "use_exact_projection": true
-  },
-  "data": {
-    "manifest": "data/slices.csv",
-    "patch_size": 256,
-    "evaluation_patch_size": null
-  },
-  "train": {
-    "batch_size": 16,
-    "workers": 4,
-    "max_steps": 300000,
-    "lr": 0.00005,
-    "eta_min": 5e-7,
-    "warmup_steps": 5000,
-    "hold_until_step": 40000,
-    "weight_decay": 0,
-    "validate_every": 5000,
-    "log_every": 100,
-    "preliminary_weight": 0.1,
-    "preliminary_anneal": [
-      80000,
-      120000
-    ],
-    "window_probability": 0.3,
-    "window_weight": 0.5,
-    "kd_weight": 0.2,
-    "teacher_checkpoint": "outputs/teacher/best.pt",
-    "early_stopping": {
-      "start_step": 160000,
-      "patience": 8,
-      "min_delta": 0.002
-    }
-  }
-}
+seed: 2026
+output_dir: outputs/student
+model:
+  variant: sparx
+  scale: 2
+  channels: 96
+  depth: 14
+  exchange_positions: [2,5]
+  dual_window_stem: true
+  exchange_gate_mode: learned
+  projection_refinements: 2
+  use_exact_projection: true
+data:
+  manifest: data/slices.csv
+  patch_size: 256
+  evaluation_patch_size: null
+train:
+  batch_size: 16
+  workers: 4
+  max_steps: 300000
+  lr: 0.00005
+  eta_min: 0.0000005
+  warmup_steps: 5000
+  hold_until_step: 40000
+  weight_decay: 0
+  validate_every: 5000
+  log_every: 100
+  preliminary_weight: 0.1
+  preliminary_anneal: [80000,120000]
+  window_probability: 0.3
+  window_weight: 0.5
+  kd_weight: 0.2
+  teacher_checkpoint: outputs/teacher/best.pt
+  early_stopping:
+    start_step: 160000
+    patience: 8
+    min_delta: 0.002
