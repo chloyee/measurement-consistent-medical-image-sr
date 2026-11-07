@@ -76,6 +76,9 @@ def main():
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
     t = cfg["train"]
+    for key in ("lr", "eta_min", "weight_decay", "preliminary_weight",
+                "window_probability", "window_weight", "kd_weight"):
+        t[key] = float(t[key])
     if t["batch_size"] < 2:
         raise ValueError("Training batch size must be at least 2")
     random.seed(cfg["seed"])
