@@ -244,7 +244,6 @@ class _LiftVJP(torch.autograd.Function):
 class BicubicExactProjector(nn.Module):
     """Minimum-norm affine projection with an autograd adjoint.
 
-    'Exact' identifies the affine target, not exact floating-point arithmetic.
     Each lift solves DD^T to rtol/atol and raises on non-convergence.
     First-order training gradients are supported, including measurement grads.
     The projector has no trainable parameters or persistent buffers.
@@ -386,8 +385,7 @@ class SPARX(nn.Module):
                     "local": features["local"],
                     "global": features["global"],
                     "reconstruction_feature": features["feature"],
-                    "fused_before_sfft": features["feature"],
-                    "fused": features["feature"],
+                                        "fused": features["feature"],
                     "range_component": range_component,
                     "null_detail": sr - range_component,
                     "prior_residual": prior_residual,
